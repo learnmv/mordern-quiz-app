@@ -34,8 +34,23 @@ api.interceptors.response.use(
 
 // Auth API
 export const authApi = {
-  login: (username: string, password: string) =>
-    api.post('/api/login', { username, password }),
+  login: async (username: string, password: string) => {
+    const formData = new URLSearchParams();
+    formData.append('username', username);
+    formData.append('password', password);
+    // Use native fetch to avoid axios interceptors
+    const res = await fetch(`${API_URL}/api/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: formData.toString(),
+    });
+    if (!res.ok) throw new Error('Login failed');
+    const data = await res.json();
+    // Return in axios-like format
+    return { data };
+  },
   register: (username: string, password: string) =>
     api.post('/api/register', { username, password }),
   logout: () => api.post('/api/logout'),
