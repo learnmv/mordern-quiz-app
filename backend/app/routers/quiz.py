@@ -14,7 +14,7 @@ from app.routers.auth import get_current_user, get_current_user_optional
 from app.services.quiz_generator import (
     generate_quiz_with_ollama, get_cached_question, store_question,
     log_quiz_request, get_popular_combinations, get_stats, get_grade_stats,
-    get_topic_stats, ALL_TOPICS, generate_diagram_quiz
+    get_topic_stats, ALL_TOPICS, generate_diagram_quiz, get_cache_metrics
 )
 from app.services.adaptive_learning import (
     get_total_questions_answered, get_all_topics_accuracy, get_topic_difficulty,
@@ -182,6 +182,12 @@ async def api_grade_stats(db: AsyncSession = Depends(get_db)):
 async def api_topic_stats(db: AsyncSession = Depends(get_db)):
     """Get topic coverage statistics"""
     return await get_topic_stats(db)
+
+
+@router.get("/cache-metrics")
+async def api_cache_metrics():
+    """Get question cache hit/miss metrics"""
+    return get_cache_metrics()
 
 
 @router.post("/generate-diagram-quiz", response_model=DiagramQuizResponse)

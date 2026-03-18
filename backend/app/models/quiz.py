@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Text, DateTime, func, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, Text, DateTime, func, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -18,6 +18,8 @@ class TopicQuestion(Base):
     __table_args__ = (
         # Unique constraint matching the original SQLite schema
         UniqueConstraint('grade', 'topic', 'difficulty', 'created_date', name='uix_topic_question'),
+        # Composite index for efficient cache lookups
+        Index('idx_topic_lookup', 'grade', 'topic', 'difficulty', 'created_date', postgresql_using='btree'),
     )
 
 

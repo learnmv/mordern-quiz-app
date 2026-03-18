@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, DateTime, func, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, DateTime, func, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -19,6 +19,7 @@ class UserProgress(Base):
 
     __table_args__ = (
         UniqueConstraint('user_id', 'topic', name='uix_user_topic'),
+        Index('idx_progress_user_topic', 'user_id', 'topic', postgresql_using='btree'),
     )
 
 
@@ -35,3 +36,7 @@ class UserQuizHistory(Base):
 
     # Relationships
     user = relationship("User", back_populates="quiz_history")
+
+    __table_args__ = (
+        Index('idx_quiz_history_user_topic', 'user_id', 'topic', 'answered_at', postgresql_using='btree'),
+    )

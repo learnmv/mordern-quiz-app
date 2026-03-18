@@ -224,56 +224,75 @@ async def get_strong_topics(
 
 
 async def get_topic_streaks(db: AsyncSession, user_id: int) -> Dict[str, Dict[str, int]]:
-    """Get current streaks for all topics user has practiced"""
-    result = await db.execute(
-        select(UserQuizHistory.topic).where(
-            UserQuizHistory.user_id == user_id
-        ).distinct()
-    )
-    topics = [row[0] for row in result.all()]
+    """Get current streaks for all topics user has practiced using single query with window functions"""
+    from sqlalchemy import text
+
+    # Single query using window functions to calculate streaks efficiently
+    query = text("""
+        WITH ranked_answers AS (
+            SELECT
+                topic,
+                was_correct,
+                ROW_NUMBER() OVER (PARTITION BY topic ORDER BY answered_at DESC) as rn,
+                answered_at
+            FROM user_quiz_history
+            WHERE user_id = :user_id
+        ),
+        current_streaks AS (
+            SELECT
+                topic,
+                COUNT(*) FILTER (WHERE was_correct = 1 AND rn <= 20) as current_streak
+            FROM ranked_answers
+            WHERE rn <= 20
+            GROUP BY topic
+        ),
+        all_answers AS (
+            SELECT
+                topic,
+                was_correct,
+                LAG(was_correct) OVER (PARTITION BY topic ORDER BY answered_at) as prev_correct
+            FROM user_quiz_history
+            WHERE user_id = :user_id
+        ),
+        streak_groups AS (
+            SELECT
+                topic,
+                was_correct,
+                SUM(CASE WHEN was_correct = 1 AND (prev_correct = 0 OR prev_correct IS NULL) THEN 1 ELSE 0 END)
+                    OVER (PARTITION BY topic ORDER BY answered_at) as streak_group
+            FROM all_answers
+        ),
+        streak_lengths AS (
+            SELECT
+                topic,
+                streak_group,
+                COUNT(*) as streak_len
+            FROM streak_groups
+            WHERE was_correct = 1
+            GROUP BY topic, streak_group
+        ),
+        max_streaks AS (
+            SELECT
+                topic,
+                COALESCE(MAX(streak_len), 0) as max_streak
+            FROM streak_lengths
+            GROUP BY topic
+        )
+        SELECT
+            cs.topic,
+            cs.current_streak,
+            COALESCE(ms.max_streak, 0) as max_streak
+        FROM current_streaks cs
+        LEFT JOIN max_streaks ms ON cs.topic = ms.topic
+    """)
+
+    result = await db.execute(query, {"user_id": user_id})
 
     streaks = {}
-    for topic in topics:
-        # Get correct streak
-        result = await db.execute(
-            select(UserQuizHistory.was_correct).where(
-                and_(
-                    UserQuizHistory.user_id == user_id,
-                    UserQuizHistory.topic == topic
-                )
-            ).order_by(UserQuizHistory.answered_at.desc()).limit(20)
-        )
-        results = result.all()
-
-        correct_streak = 0
-        for row in results:
-            if row[0] == 1:
-                correct_streak += 1
-            else:
-                break
-
-        # Get max streak ever
-        result = await db.execute(
-            select(UserQuizHistory.was_correct).where(
-                and_(
-                    UserQuizHistory.user_id == user_id,
-                    UserQuizHistory.topic == topic
-                )
-            ).order_by(UserQuizHistory.answered_at.desc())
-        )
-        all_results = result.all()
-
-        max_streak = 0
-        current_streak = 0
-        for row in all_results:
-            if row[0] == 1:
-                current_streak += 1
-                max_streak = max(max_streak, current_streak)
-            else:
-                current_streak = 0
-
+    for row in result.all():
+        topic, current_streak, max_streak = row
         streaks[topic] = {
-            "current": correct_streak,
+            "current": current_streak,
             "max": max_streak
         }
 

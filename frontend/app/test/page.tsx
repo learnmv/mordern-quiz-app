@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -10,7 +10,7 @@ import { Label } from '../components/ui/label';
 import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 import { BookOpen, Calculator, Ruler, BarChart3, Brain, CheckCircle2 } from 'lucide-react';
 
-// 6th Grade Topics from curriculum
+// Grade 6 Topics from curriculum
 const GRADE_6_TOPICS = [
   {
     id: '6-rp',
@@ -49,18 +49,100 @@ const GRADE_6_TOPICS = [
   },
 ];
 
+// Grade 7 Topics from curriculum
+const GRADE_7_TOPICS = [
+  {
+    id: '7-rp',
+    name: 'Ratios & Proportional Relationships',
+    icon: Calculator,
+    color: 'bg-blue-100 text-blue-700',
+    topics: ['Unit Rates', 'Proportional Relationships', 'Percentages', 'Ratio Reasoning'],
+  },
+  {
+    id: '7-ns',
+    name: 'The Number System',
+    icon: Brain,
+    color: 'bg-purple-100 text-purple-700',
+    topics: ['Fractions', 'Decimals', 'Rational Numbers', 'Absolute Value', 'Number Line'],
+  },
+  {
+    id: '7-ee',
+    name: 'Expressions & Equations',
+    icon: BookOpen,
+    color: 'bg-green-100 text-green-700',
+    topics: ['Variables', 'Two-Step Equations', 'Inequalities', 'Evaluating Expressions', 'Equivalent Expressions'],
+  },
+  {
+    id: '7-g',
+    name: 'Geometry',
+    icon: Ruler,
+    color: 'bg-orange-100 text-orange-700',
+    topics: ['Scale Drawings', 'Area of Circles', 'Circumference', 'Volume', 'Surface Area', 'Cross Sections'],
+  },
+  {
+    id: '7-sp',
+    name: 'Statistics & Probability',
+    icon: BarChart3,
+    color: 'bg-pink-100 text-pink-700',
+    topics: ['Random Sampling', 'Comparing Populations', 'Mean', 'Median', 'Mode', 'Range'],
+  },
+];
+
+// Grade 8 Topics from curriculum
+const GRADE_8_TOPICS = [
+  {
+    id: '8-ns',
+    name: 'The Number System',
+    icon: Brain,
+    color: 'bg-purple-100 text-purple-700',
+    topics: ['Rational Numbers', 'Irrational Numbers', 'Square Roots', 'Cube Roots'],
+  },
+  {
+    id: '8-ee',
+    name: 'Expressions & Equations',
+    icon: BookOpen,
+    color: 'bg-green-100 text-green-700',
+    topics: ['Linear Equations', 'Systems of Equations', 'Slope', 'Intercepts', 'Functions'],
+  },
+  {
+    id: '8-g',
+    name: 'Geometry',
+    icon: Ruler,
+    color: 'bg-orange-100 text-orange-700',
+    topics: ['Transformations', 'Congruence', 'Similarity', 'Pythagorean Theorem', 'Volume', 'Surface Area'],
+  },
+  {
+    id: '8-sp',
+    name: 'Statistics & Probability',
+    icon: BarChart3,
+    color: 'bg-pink-100 text-pink-700',
+    topics: ['Scatter Plots', 'Line of Best Fit', 'Two-Way Tables', 'Probability'],
+  },
+];
+
+// Curriculum map by grade
+const CURRICULUM: Record<string, typeof GRADE_6_TOPICS> = {
+  '6': GRADE_6_TOPICS,
+  '7': GRADE_7_TOPICS,
+  '8': GRADE_8_TOPICS,
+};
+
 // Diagram topics that have migrated questions
 const DIAGRAM_TOPICS = ['data_analysis', 'geometry'];
 
 export default function TestPage() {
   const router = useRouter();
-  const [selectedDomain, setSelectedDomain] = useState<string>('6-rp');
+  const searchParams = useSearchParams();
+  const grade = searchParams.get('grade') || '6';
+  const curriculum = CURRICULUM[grade] || GRADE_6_TOPICS;
+
+  const [selectedDomain, setSelectedDomain] = useState<string>(curriculum[0]?.id || '6-rp');
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
   const [difficulty, setDifficulty] = useState<string>('easy');
   const [questionCount, setQuestionCount] = useState<number>(5);
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const currentDomain = GRADE_6_TOPICS.find((d) => d.id === selectedDomain);
+  const currentDomain = curriculum.find((d) => d.id === selectedDomain);
 
   const toggleTopic = (topic: string) => {
     setSelectedTopics((prev) =>
@@ -85,7 +167,7 @@ export default function TestPage() {
 
     // Build query params
     const params = new URLSearchParams({
-      grade: '6',
+      grade,
       topics: selectedTopics.join(','),
       difficulty,
       count: questionCount.toString(),
@@ -106,7 +188,7 @@ export default function TestPage() {
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold mb-2">6th Grade Quiz Generator</h1>
+          <h1 className="text-4xl font-bold mb-2">{grade}th Grade Quiz Generator</h1>
           <p className="text-muted-foreground">
             Select topics and generate a customized quiz
           </p>
@@ -122,7 +204,7 @@ export default function TestPage() {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {GRADE_6_TOPICS.map((domain) => {
+              {curriculum.map((domain) => {
                 const Icon = domain.icon;
                 const isSelected = selectedDomain === domain.id;
                 return (

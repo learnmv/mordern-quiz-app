@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,14 +23,17 @@ async def get_progress(
     """Get user's progress, weak topics, strong topics, streaks, and badges"""
     user_id = current_user.id
 
-    # Get all data
-    progress = await get_user_progress(db, user_id)
-    weak_topics = await get_weak_topics(db, user_id)
-    strong_topics = await get_strong_topics(db, user_id)
-    streaks = await get_topic_streaks(db, user_id)
-    badges = await get_user_badges(db, user_id)
-    in_progress = await get_in_progress_topics(db, user_id)
-    stats = await get_user_stats(db, user_id)
+    # Execute all independent queries in parallel using asyncio.gather
+    # This reduces 7+ sequential round-trips to a single parallel batch
+    progress, weak_topics, strong_topics, streaks, badges, in_progress, stats = await asyncio.gather(
+        get_user_progress(db, user_id),
+        get_weak_topics(db, user_id),
+        get_strong_topics(db, user_id),
+        get_topic_streaks(db, user_id),
+        get_user_badges(db, user_id),
+        get_in_progress_topics(db, user_id),
+        get_user_stats(db, user_id)
+    )
 
     # Add streak info to weak and strong topics
     for topic in weak_topics:

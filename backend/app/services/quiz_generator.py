@@ -9,8 +9,49 @@ from datetime import date
 
 from app.config import settings
 from app.models.quiz import TopicQuestion, CompleteQuiz, QuizRequest
+from app.utils.cache import get_cache_stats
 
 logger = logging.getLogger(__name__)
+
+# Cache hit/miss counters for monitoring
+class CacheMetrics:
+    """Simple cache metrics tracking."""
+    def __init__(self):
+        self.hits = 0
+        self.misses = 0
+
+    def hit(self):
+        self.hits += 1
+
+    def miss(self):
+        self.misses += 1
+
+    @property
+    def hit_rate(self) -> float:
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": self.hit_rate,
+            "total": self.hits + self.misses
+        }
+
+# Global cache metrics
+_cache_metrics = CacheMetrics()
+
+
+def get_cache_metrics() -> dict:
+    """Get current cache metrics."""
+    return _cache_metrics.to_dict()
+
+
+def reset_cache_metrics() -> None:
+    """Reset cache metrics."""
+    _cache_metrics.hits = 0
+    _cache_metrics.misses = 0
 
 
 ALL_TOPICS = [
@@ -38,21 +79,140 @@ def get_topic_hash(topics: List[str]) -> str:
     return '+'.join(sorted_topics)
 
 
-async def get_cached_question(
+async def get_or_generate_questions(
     db: AsyncSession,
     grade: str,
     topic: str,
     difficulty: str,
-    answered_hashes: List[str]
-) -> Optional[Dict[str, Any]]:
-    """Get a cached question for the topic/difficulty, excluding already answered"""
+    needed: int = 1,
+    answered_hashes: List[str] = None
+) -> List[Dict[str, Any]]:
+    """Get cached questions or generate new ones in batch.
+
+    Args:
+        needed: Number of questions needed
+        answered_hashes: Hashes of already-answered questions to exclude
+
+    Returns:
+        List of question dictionaries
+    """
+    from datetime import timedelta
+
+    # Try cache first - get up to 'needed' questions
+    seven_days_ago = date.today() - timedelta(days=7)
     result = await db.execute(
         select(TopicQuestion).where(
             and_(
                 TopicQuestion.grade == grade,
                 TopicQuestion.topic == topic,
-                TopicQuestion.difficulty == difficulty
+                TopicQuestion.difficulty == difficulty,
+                TopicQuestion.created_date >= seven_days_ago
             )
+        )
+    )
+    recent_rows = result.scalars().all()
+
+    all_questions = []
+    for row in recent_rows:
+        questions = row.question_data.get('questions', [])
+        for q in questions:
+            if 'hash' not in q:
+                q['hash'] = generate_question_hash(q.get('text', ''))
+            all_questions.append(q)
+
+    # Filter out already answered
+    answered_set = set(answered_hashes) if answered_hashes else set()
+    fresh_questions = [q for q in all_questions if q.get('hash') not in answered_set]
+
+    # If we have enough cached questions, return them
+    if len(fresh_questions) >= needed:
+        import random
+        return random.sample(fresh_questions, needed)
+
+    # Need to generate more - calculate how many to generate
+    # Generate extra to fill cache for future requests
+    to_generate = max(5, needed * 2)
+
+    # Generate batch of questions
+    quiz_data = await generate_quiz_with_ollama(
+        grade, topic, difficulty, count=to_generate, answered_hashes=answered_hashes
+    )
+
+    if quiz_data and quiz_data.get('questions'):
+        new_questions = quiz_data['questions']
+
+        # Store all generated questions in cache
+        for q in new_questions:
+            await store_question(db, grade, topic, difficulty, q)
+
+        # Add new questions to fresh_questions (avoiding duplicates)
+        existing_hashes = {q.get('hash') for q in fresh_questions}
+        for q in new_questions:
+            if q.get('hash') not in existing_hashes and q.get('hash') not in answered_set:
+                fresh_questions.append(q)
+
+    return fresh_questions[:needed]
+
+
+async def get_cached_question(
+    db: AsyncSession,
+    grade: str,
+    topic: str,
+    difficulty: str,
+    answered_hashes: List[str],
+    recent_only: bool = True
+) -> Optional[Dict[str, Any]]:
+    """Get a cached question for the topic/difficulty, excluding already answered.
+
+    Args:
+        recent_only: If True (default), only look at questions from last 7 days.
+                    Falls back to older questions if no recent ones available.
+    """
+    from datetime import timedelta
+
+    seven_days_ago = date.today() - timedelta(days=7)
+
+    # Build base query conditions
+    base_conditions = [
+        TopicQuestion.grade == grade,
+        TopicQuestion.topic == topic,
+        TopicQuestion.difficulty == difficulty
+    ]
+
+    # Try recent questions first (last 7 days)
+    if recent_only:
+        result = await db.execute(
+            select(TopicQuestion).where(
+                and_(
+                    *base_conditions,
+                    TopicQuestion.created_date >= seven_days_ago
+                )
+            )
+        )
+        recent_rows = result.scalars().all()
+
+        all_questions = []
+        for row in recent_rows:
+            questions = row.question_data.get('questions', [])
+            for q in questions:
+                if 'hash' not in q:
+                    q['hash'] = generate_question_hash(q.get('text', ''))
+                all_questions.append(q)
+
+        # Filter out already answered questions
+        answered_set = set(answered_hashes) if answered_hashes else set()
+        fresh_questions = [q for q in all_questions if q.get('hash') not in answered_set]
+
+        if fresh_questions:
+            _cache_metrics.hit()
+            logger.debug(f"Cache hit for {grade}/{topic}/{difficulty}")
+            import random
+            return random.choice(fresh_questions)
+
+    # Fall back to all questions (or if recent_only is False)
+    result = await db.execute(
+        select(TopicQuestion).where(
+            and_(*base_conditions)
         )
     )
     rows = result.scalars().all()
@@ -73,8 +233,12 @@ async def get_cached_question(
     fresh_questions = [q for q in all_questions if q.get('hash') not in answered_set]
 
     if not fresh_questions:
+        _cache_metrics.miss()
+        logger.debug(f"Cache miss for {grade}/{topic}/{difficulty}")
         return None
 
+    _cache_metrics.hit()
+    logger.debug(f"Cache hit (fallback) for {grade}/{topic}/{difficulty}")
     import random
     return random.choice(fresh_questions)
 
@@ -85,12 +249,34 @@ async def store_question(
     topic: str,
     difficulty: str,
     question: Dict[str, Any]
-) -> None:
-    """Store a single question for caching"""
+) -> bool:
+    """Store a single question for caching. Returns True if stored, False if duplicate.
+
+    Checks for hash uniqueness across ALL date buckets to prevent duplicates.
+    """
     if 'hash' not in question:
         question['hash'] = generate_question_hash(question.get('text', ''))
 
+    q_hash = question.get('hash')
     today = date.today()
+
+    # Check if this exact question hash exists in ANY date bucket for this grade/topic/difficulty
+    result = await db.execute(
+        select(TopicQuestion).where(
+            and_(
+                TopicQuestion.grade == grade,
+                TopicQuestion.topic == topic,
+                TopicQuestion.difficulty == difficulty
+            )
+        )
+    )
+    all_rows = result.scalars().all()
+
+    for row in all_rows:
+        questions = row.question_data.get('questions', [])
+        if any(q.get('hash') == q_hash for q in questions):
+            # Duplicate found - don't store
+            return False
 
     # Check if entry exists for today
     result = await db.execute(
@@ -107,12 +293,8 @@ async def store_question(
 
     if row:
         questions = row.question_data.get('questions', [])
-        q_hash = question.get('hash')
-        exists = any(q.get('hash') == q_hash for q in questions)
-
-        if not exists:
-            questions.append(question)
-            row.question_data = {'questions': questions}
+        questions.append(question)
+        row.question_data = {'questions': questions}
     else:
         new_entry = TopicQuestion(
             grade=grade,
@@ -124,6 +306,7 @@ async def store_question(
         db.add(new_entry)
 
     await db.commit()
+    return True
 
 
 async def generate_quiz_with_ollama(

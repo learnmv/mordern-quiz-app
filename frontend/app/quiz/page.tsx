@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight, Check, X, Eraser, Palette, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, X, Eraser, Palette, Trash2, AlertCircle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -29,9 +29,10 @@ export default function QuizPage() {
   const [quizComplete, setQuizComplete] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
 
-  const { generateQuiz, generateDiagramQuiz, submitAnswer, isGenerating, isGeneratingDiagram, quizData, diagramQuizData } = useQuiz();
+  const { generateQuiz, generateDiagramQuiz, submitAnswer, retryLastOperation, loadingState, errorMessage, retryCount, isGenerating, isGeneratingDiagram, quizData, diagramQuizData } = useQuiz();
 
   // Canvas refs
+  const [canvasSnapshots, setCanvasSnapshots] = useState<Record<number, string>>({});
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentTool, setCurrentTool] = useState('pen');
@@ -73,7 +74,10 @@ export default function QuizPage() {
     }
   }, [diagramQuizData, currentQ]);
 
-  // Timer
+  // Restore canvas when question changes
+  useEffect(() => {
+    restoreCanvasSnapshot(currentQ);
+  }, [currentQ]);
   useEffect(() => {
     if (quizComplete) return;
     const timer = setInterval(() => {
@@ -133,7 +137,41 @@ export default function QuizPage() {
     });
   };
 
+  const saveCanvasSnapshot = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const dataUrl = canvas.toDataURL('image/png');
+      setCanvasSnapshots(prev => ({
+        ...prev,
+        [currentQ]: dataUrl
+      }));
+    }
+  };
+
+  const restoreCanvasSnapshot = (questionIndex: number) => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+
+    const snapshot = canvasSnapshots[questionIndex];
+    if (snapshot) {
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+      };
+      img.src = snapshot;
+    } else {
+      // Clear canvas if no snapshot
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  };
+
   const changeQuestion = async (dir: number) => {
+    // Save current canvas before navigating
+    saveCanvasSnapshot();
+
     const newIdx = currentQ + dir;
 
     if (dir === 1 && newIdx >= questions.length) {
@@ -222,6 +260,42 @@ export default function QuizPage() {
 
   const currentQuestion = questions[currentQ];
 
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      // Ignore if no current question or if typing in an input
+      if (!currentQuestion || quizComplete || document.activeElement?.tagName === 'INPUT') {
+        return;
+      }
+
+      // Number keys 1-4 for selecting options
+      if (e.key >= '1' && e.key <= '4') {
+        const optionIndex = parseInt(e.key) - 1;
+        if (currentQuestion.options[optionIndex] && !answered[currentQ]) {
+          const value = currentQuestion.options[optionIndex].charAt(0);
+          handleOptionSelect(currentQ, value);
+        }
+      }
+
+      // Arrow right for next question
+      if (e.key === 'ArrowRight') {
+        if (answered[currentQ] && currentQ < questions.length - 1) {
+          changeQuestion(1);
+        }
+      }
+
+      // Arrow left for previous question
+      if (e.key === 'ArrowLeft') {
+        if (currentQ > 0) {
+          changeQuestion(-1);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [currentQuestion, currentQ, questions.length, answered, quizComplete]);
+
   if (quizComplete) {
     const total = score.correct + score.wrong;
     const percent = total > 0 ? Math.round((score.correct / total) * 100) : 0;
@@ -267,12 +341,25 @@ export default function QuizPage() {
       {/* Header */}
       <header className="border-b bg-card px-4 py-3">
         <div className="flex items-center justify-between max-w-7xl mx-auto">
-          <Link href="/">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="h-4 w-4 mr-1" />
-              Exit
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              if (Object.keys(answers).length > 0 && !quizComplete) {
+                const confirmed = window.confirm(
+                  'You have unsaved progress. Your answers are saved, but you\'ll exit the quiz. Continue?'
+                );
+                if (confirmed) {
+                  window.location.href = '/';
+                }
+              } else {
+                window.location.href = '/';
+              }
+            }}
+          >
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            Exit
+          </Button>
 
           <div className="flex items-center gap-4">
             <div className="text-sm text-muted-foreground">
@@ -298,9 +385,29 @@ export default function QuizPage() {
         {/* Question Panel */}
         <div className="flex-1 overflow-y-auto p-6">
           {!currentQuestion || isGenerating || isGeneratingDiagram ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
-              <span className="ml-3 text-muted-foreground">Loading questions...</span>
+            <div className="flex flex-col items-center justify-center h-full">
+              <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mb-4" />
+              <span className="text-muted-foreground">
+                {loadingState === 'retrying' ? (
+                  <>
+                    Retrying... (attempt {retryCount}/{3})
+                  </>
+                ) : loadingState === 'generating' ? (
+                  'Generating questions...'
+                ) : (
+                  'Loading questions...'
+                )}
+              </span>
+            </div>
+          ) : errorMessage ? (
+            <div className="flex flex-col items-center justify-center h-full">
+              <div className="text-red-500 mb-4">
+                <AlertCircle className="h-12 w-12 mx-auto mb-2" />
+                <p className="text-lg font-medium">{errorMessage}</p>
+              </div>
+              <Button onClick={retryLastOperation} variant="outline" className="mt-4">
+                Try Again
+              </Button>
             </div>
           ) : (
             <div className="max-w-2xl mx-auto">
