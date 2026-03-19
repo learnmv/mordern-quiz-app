@@ -12,6 +12,10 @@ import {
   AlertCircle,
   BookOpen,
   Layers,
+  Eye,
+  X,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
@@ -65,6 +69,19 @@ const CURRICULUM = {
 
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
 
+interface Question {
+  id: number;
+  hash: string;
+  type: string;
+  text: string;
+  options: string[];
+  correct: string[];
+  explanation: string;
+  difficulty: string;
+  topic: string;
+  created_date: string;
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const { user, isLoading: isAuthLoading } = useAuth();
@@ -73,6 +90,7 @@ export default function AdminPage() {
     isLoadingStats,
     refetchStats,
     getQuestionCount,
+    getQuestions,
     generateQuestions,
     generationStatus,
     generationMessage,
@@ -86,6 +104,12 @@ export default function AdminPage() {
   const [selectedDifficulty, setSelectedDifficulty] = useState<string>('medium');
   const [questionCount, setQuestionCount] = useState<number>(10);
   const [topicQuestionCount, setTopicQuestionCount] = useState<number | null>(null);
+
+  // View questions state
+  const [viewQuestions, setViewQuestions] = useState<Question[]>([]);
+  const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
+  const [showQuestionsDialog, setShowQuestionsDialog] = useState(false);
+  const [expandedQuestion, setExpandedQuestion] = useState<number | null>(null);
 
   // Get available topics for selected grade
   const availableTopics = selectedGrade
@@ -122,6 +146,22 @@ export default function AdminPage() {
     // Refresh count
     const count = await getQuestionCount(selectedGrade, selectedTopic, selectedDifficulty);
     setTopicQuestionCount(count);
+  };
+
+  // Handle view questions
+  const handleViewQuestions = async () => {
+    if (!selectedGrade || !selectedTopic || !selectedDifficulty) return;
+
+    setIsLoadingQuestions(true);
+    setShowQuestionsDialog(true);
+    try {
+      const data = await getQuestions(selectedGrade, selectedTopic, selectedDifficulty);
+      setViewQuestions(data.questions || []);
+    } catch (error) {
+      setViewQuestions([]);
+    } finally {
+      setIsLoadingQuestions(false);
+    }
   };
 
   if (isAuthLoading) {
@@ -234,7 +274,7 @@ export default function AdminPage() {
               {/* Grade Selection */}
               <div className="space-y-2">
                 <Label>Grade</Label>
-                <Select value={selectedGrade} onValueChange={(value) => {
+                <Select value={selectedGrade} onValueChange={(value: string) => {
                   setSelectedGrade(value);
                   setSelectedTopic('');
                   resetStatus();
@@ -296,7 +336,7 @@ export default function AdminPage() {
                   min={1}
                   max={50}
                   value={questionCount}
-                  onChange={(e) => setQuestionCount(parseInt(e.target.value) || 1)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuestionCount(parseInt(e.target.value) || 1)}
                 />
               </div>
 
@@ -328,24 +368,34 @@ export default function AdminPage() {
                 </div>
               )}
 
-              {/* Generate Button */}
-              <Button
-                className="w-full"
-                onClick={handleGenerate}
-                disabled={!selectedGrade || !selectedTopic || isGenerating}
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Plus className="h-4 w-4 mr-2" />
-                    Generate {questionCount} Questions
-                  </>
-                )}
-              </Button>
+              {/* Action Buttons */}
+              <div className="flex gap-2">
+                <Button
+                  className="flex-1"
+                  onClick={handleGenerate}
+                  disabled={!selectedGrade || !selectedTopic || isGenerating}
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Generate {questionCount}
+                    </>
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleViewQuestions}
+                  disabled={!selectedGrade || !selectedTopic || isLoadingQuestions}
+                >
+                  <Eye className="h-4 w-4 mr-2" />
+                  View
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
@@ -374,7 +424,12 @@ export default function AdminPage() {
                   {stats?.low_stock_combinations?.map((combo: any) => (
                     <div
                       key={`${combo.grade}-${combo.topic}-${combo.difficulty}`}
-                      className="flex items-center justify-between p-3 bg-secondary rounded-lg"
+                      className="flex items-center justify-between p-3 bg-secondary rounded-lg cursor-pointer hover:bg-secondary/80"
+                      onClick={() => {
+                        setSelectedGrade(combo.grade);
+                        setSelectedTopic(combo.topic);
+                        setSelectedDifficulty(combo.difficulty);
+                      }}
                     >
                       <div>
                         <p className="font-medium text-sm">{combo.topic}</p>
@@ -415,6 +470,7 @@ export default function AdminPage() {
                       <th className="text-left py-2 px-4 font-medium">Topic</th>
                       <th className="text-left py-2 px-4 font-medium">Difficulty</th>
                       <th className="text-right py-2 px-4 font-medium">Count</th>
+                      <th className="text-right py-2 px-4 font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -430,6 +486,20 @@ export default function AdminPage() {
                             {combo.count}
                           </Badge>
                         </td>
+                        <td className="py-2 px-4 text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setSelectedGrade(combo.grade);
+                              setSelectedTopic(combo.topic);
+                              setSelectedDifficulty(combo.difficulty);
+                              handleViewQuestions();
+                            }}
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -439,6 +509,120 @@ export default function AdminPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Questions Dialog */}
+      {showQuestionsDialog && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-background rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-4 border-b flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold">
+                  Questions: {selectedTopic}
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Grade {selectedGrade} • {selectedDifficulty} • {viewQuestions.length} questions
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setShowQuestionsDialog(false);
+                  setViewQuestions([]);
+                  setExpandedQuestion(null);
+                }}
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {isLoadingQuestions ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                </div>
+              ) : viewQuestions.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">
+                  No questions found for this combination.
+                </p>
+              ) : (
+                viewQuestions.map((question, index) => (
+                  <div
+                    key={question.hash || index}
+                    className="border rounded-lg overflow-hidden"
+                  >
+                    <button
+                      className="w-full p-4 text-left flex items-start justify-between hover:bg-secondary/50"
+                      onClick={() => setExpandedQuestion(
+                        expandedQuestion === index ? null : index
+                      )}
+                    >
+                      <div className="flex-1">
+                        <p className="font-medium">
+                          {index + 1}. {question.text.substring(0, 100)}
+                          {question.text.length > 100 ? '...' : ''}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Type: {question.type} • Hash: {question.hash?.substring(0, 8)}...
+                        </p>
+                      </div>
+                      {expandedQuestion === index ? (
+                        <ChevronUp className="h-5 w-5 text-muted-foreground" />
+                      ) : (
+                        <ChevronDown className="h-5 w-5 text-muted-foreground" />
+                      )}
+                    </button>
+
+                    {expandedQuestion === index && (
+                      <div className="p-4 border-t bg-secondary/30">
+                        <div className="space-y-4">
+                          <div>
+                            <p className="font-medium mb-2">Question:</p>
+                            <p className="text-sm">{question.text}</p>
+                          </div>
+
+                          <div>
+                            <p className="font-medium mb-2">Options:</p>
+                            <div className="space-y-1">
+                              {question.options?.map((option, optIndex) => (
+                                <div
+                                  key={optIndex}
+                                  className={`p-2 rounded text-sm ${
+                                    question.correct?.includes(option)
+                                      ? 'bg-green-100 text-green-800 font-medium'
+                                      : 'bg-background'
+                                  }`}
+                                >
+                                  {String.fromCharCode(65 + optIndex)}. {option}
+                                  {question.correct?.includes(option) && (
+                                    <span className="ml-2 text-xs">(Correct)</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div>
+                            <p className="font-medium mb-1">Explanation:</p>
+                            <p className="text-sm text-muted-foreground">
+                              {question.explanation}
+                            </p>
+                          </div>
+
+                          <div className="text-xs text-muted-foreground pt-2 border-t">
+                            <p>Hash: {question.hash}</p>
+                            <p>Created: {question.created_date}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

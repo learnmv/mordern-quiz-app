@@ -103,6 +103,10 @@ export const adminApi = {
   getQuestionCount: (grade: string, topic: string, difficulty: string) =>
     api.get(`/api/admin/question-count/${grade}/${topic}/${difficulty}`),
 
+  // Get questions for specific combination
+  getQuestions: (grade: string, topic: string, difficulty: string) =>
+    api.get(`/api/admin/questions/${grade}/${topic}/${difficulty}`),
+
   // Get all question stats
   getQuestionStats: () =>
     api.get('/api/admin/question-stats'),

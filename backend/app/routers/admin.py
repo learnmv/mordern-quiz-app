@@ -1,10 +1,13 @@
 """Admin endpoints for question management."""
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.routers.auth import get_current_user
@@ -439,6 +442,58 @@ async def get_question_count(
         'topic': topic,
         'difficulty': difficulty,
         'count': total_questions
+    }
+
+
+@router.get("/questions/{grade}/{topic}/{difficulty}")
+async def get_questions_for_topic(
+    grade: str,
+    topic: str,
+    difficulty: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get all questions for a specific grade/topic/difficulty combination.
+
+    Requires admin privileges.
+    """
+    verify_admin(current_user)
+
+    result = await db.execute(
+        select(TopicQuestion).where(
+            and_(
+                TopicQuestion.grade == grade,
+                TopicQuestion.topic == topic,
+                TopicQuestion.difficulty == difficulty
+            )
+        )
+    )
+
+    rows = result.scalars().all()
+    all_questions = []
+
+    for row in rows:
+        questions = row.question_data.get('questions', [])
+        for q in questions:
+            all_questions.append({
+                'id': q.get('id'),
+                'hash': q.get('hash'),
+                'type': q.get('type'),
+                'text': q.get('text'),
+                'options': q.get('options'),
+                'correct': q.get('correct'),
+                'explanation': q.get('explanation'),
+                'difficulty': q.get('difficulty'),
+                'topic': q.get('topic'),
+                'created_date': row.created_date.isoformat() if row.created_date else None
+            })
+
+    return {
+        'grade': grade,
+        'topic': topic,
+        'difficulty': difficulty,
+        'count': len(all_questions),
+        'questions': all_questions
     }
 
 

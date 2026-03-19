@@ -40,6 +40,16 @@ export function useAdmin() {
     return response.data.count;
   }, []);
 
+  // Get questions for specific combination
+  const getQuestions = useCallback(async (
+    grade: string,
+    topic: string,
+    difficulty: string
+  ) => {
+    const response = await adminApi.getQuestions(grade, topic, difficulty);
+    return response.data;
+  }, []);
+
   // Generate questions mutation
   const generateMutation = useMutation({
     mutationFn: async (data: {
@@ -74,6 +84,7 @@ export function useAdmin() {
 
     // Actions
     getQuestionCount,
+    getQuestions,
     generateQuestions: generateMutation.mutateAsync,
 
     // Status
