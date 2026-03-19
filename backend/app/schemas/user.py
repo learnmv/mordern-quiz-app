@@ -39,3 +39,4 @@ class CurrentUser(BaseModel):
     logged_in: bool
     user_id: Optional[int] = None
     username: Optional[str] = None
+    is_admin: bool = False

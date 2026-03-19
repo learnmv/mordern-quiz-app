@@ -1,7 +1,7 @@
 """Background tasks for pre-generating quiz questions."""
 import asyncio
 import logging
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -208,6 +208,101 @@ async def pregenerate_single_topic(
     """
     async with AsyncSessionLocal() as db:
         return await generate_and_store_questions(db, grade, topic, difficulty, count)
+
+
+async def pregenerate_bulk_task(
+    grades: List[str],
+    topics: List[str],
+    difficulties: List[str],
+    count_per_combo: int = 10
+) -> Dict[str, Any]:
+    """Background task for bulk pre-generating questions.
+
+    This function is designed to be run in the background task queue.
+    It generates questions for all specified combinations.
+
+    Args:
+        grades: List of grade levels (e.g., ["6", "7", "8"])
+        topics: List of topic names
+        difficulties: List of difficulty levels (e.g., ["easy", "medium", "hard"])
+        count_per_combo: Number of questions to generate per combination
+
+    Returns:
+        Dictionary with statistics about the generation run
+    """
+    stats = {
+        "total_combinations": len(grades) * len(topics) * len(difficulties),
+        "processed": 0,
+        "generated": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": []
+    }
+
+    async with AsyncSessionLocal() as db:
+        for grade in grades:
+            for topic in topics:
+                for difficulty in difficulties:
+                    stats["processed"] += 1
+
+                    try:
+                        # Check existing count
+                        existing_count = 0
+                        result = await db.execute(
+                            select(TopicQuestion).where(
+                                and_(
+                                    TopicQuestion.grade == grade,
+                                    TopicQuestion.topic == topic,
+                                    TopicQuestion.difficulty == difficulty
+                                )
+                            )
+                        )
+                        rows = result.scalars().all()
+                        for row in rows:
+                            existing_count += len(row.question_data.get('questions', []))
+
+                        if existing_count >= count_per_combo:
+                            stats["skipped"] += 1
+                            continue
+
+                        # Generate questions
+                        needed = count_per_combo - existing_count
+                        quiz_data = await generate_quiz_with_ollama(
+                            grade=grade,
+                            topic=topic,
+                            difficulty=difficulty,
+                            count=needed
+                        )
+
+                        if quiz_data and quiz_data.get('questions'):
+                            stored = 0
+                            for question in quiz_data['questions']:
+                                success = await store_question(
+                                    db, grade, topic, difficulty, question
+                                )
+                                if success:
+                                    stored += 1
+
+                            await db.commit()
+                            stats["generated"] += stored
+                            logger.info(f"Generated {stored} questions for {grade}/{topic}/{difficulty}")
+                        else:
+                            stats["failed"] += 1
+                            error_msg = f"No questions generated for {grade}/{topic}/{difficulty}"
+                            stats["errors"].append(error_msg)
+                            logger.warning(error_msg)
+
+                    except Exception as e:
+                        stats["failed"] += 1
+                        error_msg = f"Error generating for {grade}/{topic}/{difficulty}: {str(e)}"
+                        stats["errors"].append(error_msg)
+                        logger.error(error_msg)
+
+                    # Small delay to avoid overwhelming the API
+                    await asyncio.sleep(0.5)
+
+    logger.info(f"Bulk pre-generation complete: {stats}")
+    return stats
 
 
 # For running as a standalone script or scheduled task

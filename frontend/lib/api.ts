@@ -84,3 +84,42 @@ export const analyticsApi = {
   getGradeStats: () => api.get('/api/grade-stats'),
   getTopicStats: () => api.get('/api/topic-stats'),
 };
+
+// Admin API
+export const adminApi = {
+  // Generate questions for specific topic
+  generateQuestions: (data: {
+    grade: string;
+    topic: string;
+    difficulty: string;
+    count: number;
+  }) => api.post('/api/admin/generate-questions', data),
+
+  // Get topics for a grade
+  getTopicsByGrade: (grade: string) =>
+    api.get(`/api/admin/topics/${grade}`),
+
+  // Get question count for specific combination
+  getQuestionCount: (grade: string, topic: string, difficulty: string) =>
+    api.get(`/api/admin/question-count/${grade}/${topic}/${difficulty}`),
+
+  // Get all question stats
+  getQuestionStats: () =>
+    api.get('/api/admin/question-stats'),
+
+  // Get stats for specific combination
+  getCombinationStats: (grade: string, topic: string, difficulty: string) =>
+    api.get(`/api/admin/question-stats/${grade}/${topic}/${difficulty}`),
+
+  // Trigger pre-generation
+  pregenerate: (data: {
+    grades?: string[];
+    topics?: string[];
+    difficulties?: string[];
+    count_per_combo?: number;
+  }) => api.post('/api/admin/pregenerate', data),
+
+  // Get pregeneration status
+  getPregenerateStatus: (taskId: string) =>
+    api.get(`/api/admin/pregenerate/status/${taskId}`),
+};

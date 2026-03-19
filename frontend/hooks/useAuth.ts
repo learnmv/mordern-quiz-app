@@ -56,6 +56,7 @@ export function useAuth() {
         setAuth(localStorage.getItem('token') || '', {
           id: response.data.user_id,
           username: response.data.username,
+          is_admin: response.data.is_admin,
         });
       }
       return response.data;

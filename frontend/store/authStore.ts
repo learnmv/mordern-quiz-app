@@ -3,9 +3,9 @@ import { persist } from 'zustand/middleware';
 
 interface AuthState {
   token: string | null;
-  user: { id: number; username: string } | null;
+  user: { id: number; username: string; is_admin?: boolean } | null;
   isAuthenticated: boolean;
-  setAuth: (token: string, user: { id: number; username: string }) => void;
+  setAuth: (token: string, user: { id: number; username: string; is_admin?: boolean }) => void;
   logout: () => void;
 }
 

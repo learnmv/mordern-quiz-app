@@ -19,6 +19,10 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://quizuser:quizpass@localhost:5432/quizdb"
+    database_replica_url: Optional[str] = None  # Read replica URL
+
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
 
     # Security
     secret_key: str = "your-secret-key-change-in-production"
@@ -32,6 +36,11 @@ class Settings(BaseSettings):
 
     # CORS - comma-separated string will be parsed
     cors_origins: str = "http://localhost:3000"
+
+    # Rate Limiting
+    rate_limit_enabled: bool = True
+    rate_limit_default: int = 100  # requests per minute
+    rate_limit_generate: int = 10  # requests per minute for expensive operations
 
     def get_cors_origins(self) -> List[str]:
         """Get CORS origins as a list"""

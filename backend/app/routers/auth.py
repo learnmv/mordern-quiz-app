@@ -27,6 +27,9 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    if token is None:
+        raise credentials_exception
+
     payload = decode_token(token)
     if payload is None:
         raise credentials_exception
@@ -123,6 +126,7 @@ async def get_me(current_user: User = Depends(get_current_user_optional)):
         return {
             "logged_in": True,
             "user_id": current_user.id,
-            "username": current_user.username
+            "username": current_user.username,
+            "is_admin": current_user.is_admin
         }
-    return {"logged_in": False}
+    return {"logged_in": False, "is_admin": False}

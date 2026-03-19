@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useTheme } from 'next-themes';
-import { Moon, Sun, Trophy, BookOpen, TrendingUp, User } from 'lucide-react';
+import { Moon, Sun, Trophy, BookOpen, TrendingUp, User, Shield } from 'lucide-react';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { Badge } from './components/ui/badge';
@@ -150,6 +150,14 @@ export default function Home() {
 
             {isAuthenticated ? (
               <>
+                {user?.is_admin && (
+                  <Link href="/admin">
+                    <Button variant="ghost" className="gap-2">
+                      <Shield className="h-4 w-4" />
+                      Admin
+                    </Button>
+                  </Link>
+                )}
                 <Link href="/dashboard">
                   <Button variant="ghost" className="gap-2">
                     <TrendingUp className="h-4 w-4" />

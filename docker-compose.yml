@@ -7,8 +7,11 @@ services:
       POSTGRES_USER: quizuser
       POSTGRES_PASSWORD: quizpass
       POSTGRES_DB: quizdb
+      # Enable pg_stat_statements for query statistics
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # SQL file will be run manually after tables are created
     ports:
       - "5432:5432"
     healthcheck:
@@ -16,22 +19,84 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - max_connections=200
+
+  # PgBouncer for connection pooling
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    environment:
+      DATABASES_HOST: db
+      DATABASES_PORT: 5432
+      DATABASES_DATABASE: quizdb
+      DATABASES_USER: quizuser
+      DATABASES_PASSWORD: quizpass
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 25
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_IDLE_TIMEOUT: 600
+      SERVER_LIFETIME: 3600
+      SERVER_CONNECT_TIMEOUT: 5
+      QUERY_WAIT_TIMEOUT: 120
+      # Disable DNS resolution and use IP
+      SERVER_FAST_CLOSE: 0
+    ports:
+      - "6432:6432"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep pgbouncer || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Add network alias to ensure connectivity
+    networks:
+      - default
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     environment:
+      # Connect directly to database (PgBouncer available for future use)
       DATABASE_URL: postgresql+asyncpg://quizuser:quizpass@db:5432/quizdb
+      DATABASE_REPLICA_URL: postgresql+asyncpg://quizuser:quizpass@db:5432/quizdb
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-https://ollama.com/api}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-kimi-k2.5:cloud}
       CORS_ORIGINS: http://localhost:3000,http://10.0.0.131:3000
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "0.0.0.0:8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ./backend:/app
@@ -52,7 +117,12 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-      - /app/.next
+    command: sh -c "npm run build && npm start"
 
 volumes:
   postgres_data:
+  redis_data:
+
+networks:
+  default:
+    driver: bridge

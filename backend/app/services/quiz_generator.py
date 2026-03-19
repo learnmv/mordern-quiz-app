@@ -2,7 +2,8 @@ import json
 import hashlib
 import httpx
 import logging
-from typing import List, Optional, Dict, Any
+import time
+from typing import List, Optional, Dict, Any, AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from datetime import date
@@ -12,6 +13,52 @@ from app.models.quiz import TopicQuestion, CompleteQuiz, QuizRequest
 from app.utils.cache import get_cache_stats
 
 logger = logging.getLogger(__name__)
+
+# JSON Schema for strict question validation
+QUESTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "type": {"type": "string", "enum": ["single_choice", "multiple_choice"]},
+                    "text": {"type": "string", "minLength": 10},
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 4,
+                        "maxItems": 4
+                    },
+                    "correct": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1
+                    },
+                    "explanation": {"type": "string", "minLength": 20},
+                    "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]},
+                    "topic": {"type": "string"}
+                },
+                "required": ["id", "type", "text", "options", "correct", "explanation"]
+            }
+        }
+    },
+    "required": ["questions"]
+}
+
+# Topics that benefit from thinking mode
+COMPLEX_TOPICS = [
+    "Systems of Equations",
+    "Proportional Relationships",
+    "Multi-Step Equations",
+    "Surface Area",
+    "Volume of Prisms",
+]
+
+# Session-based keep_alive management
+_active_sessions: Dict[str, float] = {}
 
 # Cache hit/miss counters for monitoring
 class CacheMetrics:
@@ -243,6 +290,61 @@ async def get_cached_question(
     return random.choice(fresh_questions)
 
 
+async def get_pregenerated_questions(
+    db: AsyncSession,
+    grade: str,
+    topic: str,
+    difficulty: str,
+    count: int = 1,
+    exclude_hashes: List[str] = None
+) -> List[Dict[str, Any]]:
+    """Get pre-generated questions from database.
+
+    Unlike get_cached_question, this returns ALL questions for the
+    combination (not just recent), filtering out answered ones.
+
+    Args:
+        db: Database session
+        grade: Grade level
+        topic: Topic name
+        difficulty: Difficulty level
+        count: Number of questions needed
+        exclude_hashes: Question hashes to exclude (already answered)
+
+    Returns:
+        List of question dictionaries
+    """
+    # Get all questions for this combination
+    result = await db.execute(
+        select(TopicQuestion).where(
+            and_(
+                TopicQuestion.grade == grade,
+                TopicQuestion.topic == topic,
+                TopicQuestion.difficulty == difficulty
+            )
+        )
+    )
+
+    rows = result.scalars().all()
+
+    all_questions = []
+    for row in rows:
+        questions = row.question_data.get('questions', [])
+        for q in questions:
+            if 'hash' not in q:
+                q['hash'] = generate_question_hash(q.get('text', ''))
+            all_questions.append(q)
+
+    # Filter out answered questions
+    exclude_set = set(exclude_hashes) if exclude_hashes else set()
+    available = [q for q in all_questions if q.get('hash') not in exclude_set]
+
+    # Return up to count questions
+    if len(available) > count:
+        return random.sample(available, count)
+    return available
+
+
 async def store_question(
     db: AsyncSession,
     grade: str,
@@ -314,9 +416,28 @@ async def generate_quiz_with_ollama(
     topic: str,
     difficulty: str,
     count: int = 1,
-    answered_hashes: List[str] = None
+    answered_hashes: List[str] = None,
+    use_thinking: bool = None,
+    user_id: Optional[str] = None,
+    stream: bool = False
 ) -> Optional[Dict[str, Any]]:
-    """Generate quiz questions using Ollama API"""
+    """Generate quiz questions using Ollama API with enhanced features.
+
+    Args:
+        grade: Grade level (6-8)
+        topic: Math topic
+        difficulty: easy, medium, or hard
+        count: Number of questions to generate
+        answered_hashes: Hashes of already-answered questions to exclude
+        use_thinking: Enable thinking mode (auto-detected if None)
+        user_id: User ID for session-based keep_alive
+        stream: If True, return AsyncGenerator for streaming
+    """
+    global _active_sessions
+
+    # Auto-enable thinking for complex topics
+    if use_thinking is None:
+        use_thinking = topic in COMPLEX_TOPICS and difficulty in ["medium", "hard"]
 
     personalization_context = ""
     if answered_hashes:
@@ -327,8 +448,16 @@ async def generate_quiz_with_ollama(
     elif difficulty == "hard":
         personalization_context += "\n\nMake questions HARDER - multi-step problems, complex reasoning."
 
+    # Add thinking instructions if enabled
+    thinking_instruction = ""
+    if use_thinking:
+        thinking_instruction = """
+
+THINKING MODE: Show your reasoning process for solving this problem step by step.
+Include your thinking in the 'thinking' field of each question."""
+
     prompt = f"""Create exactly {count} math question{'s' if count > 1 else ''} for {grade}th grade California Common Core standards.
-Topic: {topic}{personalization_context}
+Topic: {topic}{personalization_context}{thinking_instruction}
 
 CRITICAL INSTRUCTIONS:
 1. You MUST complete all {count} question{'s' if count > 1 else ''} - do not stop early
@@ -351,19 +480,32 @@ Required JSON format:
         if settings.ollama_base_url.endswith('/api'):
             ollama_url = f"{settings.ollama_base_url}/generate"
 
+        # Determine keep_alive based on session activity
+        keep_alive = "5m"  # Default 5 minutes
+        if user_id:
+            last_activity = _active_sessions.get(user_id)
+            if last_activity and (time.time() - last_activity) < 300:  # Active in last 5 min
+                keep_alive = "30m"  # Extend for active users
+            _active_sessions[user_id] = time.time()
+
         payload = {
             "model": settings.ollama_model,
             "prompt": prompt,
-            "stream": False,
-            "format": "json",
+            "stream": stream,
+            "format": QUESTION_SCHEMA if not stream else "json",
+            "keep_alive": keep_alive,
             "options": {
                 "temperature": 0.7,
-                "num_predict": 8000,
+                "num_predict": 10000 if use_thinking else 8000,
                 "num_ctx": 131072,
                 "num_gpu": 99,
                 "main_gpu": 0
             }
         }
+
+        # Add thinking parameter if enabled (Ollama API extension)
+        if use_thinking:
+            payload["think"] = "medium"
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -409,12 +551,119 @@ Required JSON format:
         for i, q in enumerate(questions):
             q['hash'] = generate_question_hash(q.get('text', ''))
             q['topic'] = topic
+            # Store thinking if present
+            if use_thinking and 'thinking' in result:
+                q['thinking'] = result.get('thinking')
 
         return quiz_data
 
     except Exception as e:
         logger.error(f"Error generating quiz: {e}")
         return None
+
+
+async def generate_quiz_stream(
+    grade: str,
+    topic: str,
+    difficulty: str,
+    count: int = 1
+) -> AsyncGenerator[str, None]:
+    """Stream quiz generation progress using Server-Sent Events.
+
+    Args:
+        grade: Grade level
+        topic: Math topic
+        difficulty: easy, medium, or hard
+        count: Number of questions to generate
+
+    Yields:
+        SSE formatted strings with progress updates
+    """
+    try:
+        headers = {'Content-Type': 'application/json'}
+        if settings.ollama_api_key:
+            headers['Authorization'] = f'Bearer {settings.ollama_api_key}'
+
+        ollama_url = f"{settings.ollama_base_url}/api/generate"
+        if settings.ollama_base_url.endswith('/api'):
+            ollama_url = f"{settings.ollama_base_url}/generate"
+
+        prompt = f"""Create exactly {count} math question{'s' if count > 1 else ''} for {grade}th grade.
+Topic: {topic}
+Difficulty: {difficulty}
+
+Return valid JSON with questions array."""
+
+        payload = {
+            "model": settings.ollama_model,
+            "prompt": prompt,
+            "stream": True,
+            "format": QUESTION_SCHEMA,
+            "options": {
+                "temperature": 0.7,
+                "num_predict": 8000,
+                "num_ctx": 131072,
+            }
+        }
+
+        accumulated_response = ""
+        total_tokens = 0
+
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST",
+                ollama_url,
+                headers=headers,
+                json=payload,
+                timeout=300.0
+            ) as response:
+                if response.status_code != 200:
+                    error_msg = await response.aread()
+                    yield f"data: {json.dumps({'error': f'Ollama error: {response.status_code}'})}\n\n"
+                    return
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+
+                    try:
+                        data = json.loads(line)
+
+                        # Accumulate response text
+                        if 'response' in data:
+                            accumulated_response += data['response']
+
+                        # Calculate progress based on tokens
+                        if 'eval_count' in data:
+                            total_tokens = data['eval_count']
+                            progress = min(100, int((total_tokens / 8000) * 100))
+                            yield f"data: {json.dumps({'progress': progress, 'tokens': total_tokens})}\n\n"
+
+                        # Check if complete
+                        if data.get('done'):
+                            # Parse final response
+                            try:
+                                start = accumulated_response.find('{')
+                                end = accumulated_response.rfind('}') + 1
+                                if start >= 0 and end > start:
+                                    quiz_data = json.loads(accumulated_response[start:end])
+                                    # Add hashes
+                                    for q in quiz_data.get('questions', []):
+                                        q['hash'] = generate_question_hash(q.get('text', ''))
+                                        q['topic'] = topic
+                                    yield f"data: {json.dumps({'complete': True, 'questions': quiz_data.get('questions', [])})}\n\n"
+                                else:
+                                    yield f"data: {json.dumps({'error': 'Invalid JSON in response'})}\n\n"
+                            except json.JSONDecodeError as e:
+                                yield f"data: {json.dumps({'error': f'JSON parse error: {str(e)}'})}\n\n"
+                            break
+
+                    except json.JSONDecodeError:
+                        continue
+
+    except Exception as e:
+        logger.error(f"Error in stream generation: {e}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 
 async def log_quiz_request(

@@ -1,20 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 import random
+import json
 
 from app.database import get_db
 from app.models.user import User
 from app.schemas.quiz import (
     QuizRequest, QuizResponse, AnswerSubmission, AnswerResponse,
     DailyStats, PopularCombination, GradeStats, TopicStats,
-    WeakTopicsQuizResponse, DiagramQuizRequest, DiagramQuizResponse
+    WeakTopicsQuizResponse, DiagramQuizRequest, DiagramQuizResponse,
+    QuizStreamRequest
 )
 from app.routers.auth import get_current_user, get_current_user_optional
 from app.services.quiz_generator import (
     generate_quiz_with_ollama, get_cached_question, store_question,
     log_quiz_request, get_popular_combinations, get_stats, get_grade_stats,
-    get_topic_stats, ALL_TOPICS, generate_diagram_quiz, get_cache_metrics
+    get_topic_stats, ALL_TOPICS, generate_diagram_quiz, get_cache_metrics,
+    generate_quiz_stream, get_pregenerated_questions
 )
 from app.services.adaptive_learning import (
     get_total_questions_answered, get_all_topics_accuracy, get_topic_difficulty,
@@ -30,7 +34,7 @@ async def generate_quiz(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_optional)
 ):
-    """Generate a quiz with personalization"""
+    """Generate a quiz with personalization - now fetches from pre-generated pool first."""
     user_id = current_user.id if current_user else None
 
     # Determine topic and difficulty
@@ -71,35 +75,61 @@ async def generate_quiz(
         topic_for_question = random.choice(ALL_TOPICS)
         answered_hashes = []
 
-    # Try cache first
-    cached = await get_cached_question(db, request.grade, topic_for_question, difficulty, answered_hashes)
+    # Try to get from pre-generated pool first (new approach)
+    questions = await get_pregenerated_questions(
+        db,
+        grade=request.grade,
+        topic=topic_for_question,
+        difficulty=difficulty,
+        count=request.count,
+        exclude_hashes=answered_hashes
+    )
 
-    if cached:
-        await log_quiz_request(db, request.grade, [topic_for_question], difficulty, "cache", user_id)
-        return {"questions": [cached]}
+    if len(questions) >= request.count:
+        # Have enough pre-generated questions
+        await log_quiz_request(
+            db, request.grade, [topic_for_question], difficulty,
+            "pregenerated", user_id
+        )
+        return {"questions": questions[:request.count]}
 
-    # Generate new question
+    # Not enough pre-generated, need to generate more
+    needed = request.count - len(questions)
+
     quiz_data = await generate_quiz_with_ollama(
         request.grade,
         topic_for_question,
         difficulty,
-        request.count,
+        needed,
         answered_hashes
     )
 
-    if not quiz_data:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate quiz"
+    if quiz_data and quiz_data.get('questions'):
+        # Store newly generated questions
+        for q in quiz_data['questions']:
+            await store_question(db, request.grade, topic_for_question, difficulty, q)
+
+        # Combine pre-generated + newly generated
+        all_questions = questions + quiz_data['questions']
+
+        await log_quiz_request(
+            db, request.grade, [topic_for_question], difficulty,
+            "mixed", user_id
         )
+        return {"questions": all_questions[:request.count]}
 
-    # Store in cache
-    for q in quiz_data["questions"]:
-        await store_question(db, request.grade, topic_for_question, difficulty, q)
+    # Fallback: return what we have from pre-generated (may be less than requested)
+    if questions:
+        await log_quiz_request(
+            db, request.grade, [topic_for_question], difficulty,
+            "pregenerated_partial", user_id
+        )
+        return {"questions": questions}
 
-    await log_quiz_request(db, request.grade, [topic_for_question], difficulty, "fresh", user_id)
-
-    return quiz_data
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to generate quiz"
+    )
 
 
 @router.post("/answer", response_model=AnswerResponse)
@@ -188,6 +218,26 @@ async def api_topic_stats(db: AsyncSession = Depends(get_db)):
 async def api_cache_metrics():
     """Get question cache hit/miss metrics"""
     return get_cache_metrics()
+
+
+@router.post("/generate-quiz-stream")
+async def generate_quiz_stream_endpoint(request: QuizStreamRequest):
+    """SSE endpoint for streaming quiz generation with real-time progress updates.
+
+    Returns Server-Sent Events with progress updates:
+    - data: {"progress": 50, "tokens": 4000}  # Progress percentage
+    - data: {"complete": true, "questions": [...]}  # Final result
+    - data: {"error": "message"}  # Error message
+    """
+    return StreamingResponse(
+        generate_quiz_stream(request.grade, request.topic, request.difficulty, request.count),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
 
 
 @router.post("/generate-diagram-quiz", response_model=DiagramQuizResponse)
