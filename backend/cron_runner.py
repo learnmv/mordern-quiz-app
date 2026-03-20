@@ -18,7 +18,11 @@ import sys
 import os
 
 # Add the app directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+# Change to script directory so .env file can be found
+os.chdir(SCRIPT_DIR)
 
 from app.tasks.cron_jobs import generate_questions_for_grade_difficulty
 

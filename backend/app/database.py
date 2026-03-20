@@ -20,7 +20,7 @@ engine = create_async_engine(
 )
 
 # Read replica engine (falls back to primary if not configured)
-replica_url = getattr(settings, 'database_replica_url', settings.database_url)
+replica_url = getattr(settings, 'database_replica_url', None) or settings.database_url
 replica_engine = create_async_engine(
     replica_url,
     echo=False,

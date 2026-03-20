@@ -12,7 +12,13 @@ from typing import Dict, Any
 from datetime import datetime
 
 from app.database import AsyncSessionLocal
-from app.services.quiz_generator import generate_quiz_with_ollama, store_question, get_pregenerated_questions
+from app.services.quiz_generator import (
+    generate_quiz_with_ollama,
+    generate_diagram_quiz,
+    DIAGRAM_TOPICS,
+    store_question,
+    get_pregenerated_questions
+)
 from app.services.topic_cycler import TopicCycler
 
 logger = logging.getLogger(__name__)
@@ -77,19 +83,29 @@ async def generate_questions_for_grade_difficulty(
                     "existing_count": existing_count
                 }
 
-            # Generate questions
+            # Generate questions (use diagram-aware generator for diagram topics)
             logger.info(
                 f"Cron[{grade}/{difficulty}]: Generating {QUESTIONS_PER_RUN} "
                 f"questions for topic '{topic}' (index {topic_index})"
             )
 
-            quiz_data = await generate_quiz_with_ollama(
-                grade=grade,
-                topic=topic,
-                difficulty=difficulty,
-                count=QUESTIONS_PER_RUN,
-                answered_hashes=[]
-            )
+            if topic in DIAGRAM_TOPICS:
+                logger.info(f"Cron[{grade}/{difficulty}]: Using diagram-aware generator for {topic}")
+                quiz_data = await generate_diagram_quiz(
+                    grade=grade,
+                    topic=topic,
+                    difficulty=difficulty,
+                    count=QUESTIONS_PER_RUN,
+                    answered_hashes=[]
+                )
+            else:
+                quiz_data = await generate_quiz_with_ollama(
+                    grade=grade,
+                    topic=topic,
+                    difficulty=difficulty,
+                    count=QUESTIONS_PER_RUN,
+                    answered_hashes=[]
+                )
 
             if not quiz_data or not quiz_data.get('questions'):
                 logger.warning(
