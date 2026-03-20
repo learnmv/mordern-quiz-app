@@ -820,10 +820,20 @@ async def get_topic_stats(db: AsyncSession) -> Dict[str, int]:
 
 
 # Diagram topics that require visual representation
+# Covers all grades (6, 7, 8) with grade-appropriate diagram topics
 DIAGRAM_TOPICS = [
+    # Grade 6 diagram topics
     "Area of Polygons", "Volume of Prisms", "Surface Area",
     "Coordinate Plane", "Coordinate Plane Polygons", "Number Line",
-    "Dot Plots", "Histograms", "Box Plots"
+    "Dot Plots", "Histograms", "Box Plots",
+    # Grade 7 diagram topics
+    "Scale Drawings", "Drawing Geometric Shapes", "Cross-Sections",
+    "Circles (Area & Circumference)", "Angles", "Area & Perimeter",
+    "Volume & Surface Area", "Tree Diagrams",
+    # Grade 8 diagram topics
+    "Transformations", "Congruence", "Similarity", "Pythagorean Theorem",
+    "Volume of Cylinders/Cones/Spheres", "Surface Area", "Coordinate Geometry",
+    "Scatter Plots", "Two-Way Tables"
 ]
 
 
@@ -1058,7 +1068,121 @@ For BOX PLOTS questions:
 - Use "type": "chart"
 - Show minimum, Q1, median, Q3, maximum
 - Display whiskers and box clearly
-- Label all five key values"""
+- Label all five key values""",
+
+        # Grade 7 diagram topics
+        "Scale Drawings": """
+For SCALE DRAWINGS questions:
+- Use "type": "svg" or "coordinate"
+- Show the original and scaled figures
+- Label the scale factor (e.g., "1:50" or "1 cm = 5 ft")
+- Include measurements for both figures""",
+
+        "Drawing Geometric Shapes": """
+For DRAWING GEOMETRIC SHAPES questions:
+- Use "type": "svg"
+- Show the shape with proper construction lines
+- Label angles, sides, and vertices
+- Include compass/ruler construction marks if applicable""",
+
+        "Cross-Sections": """
+For CROSS-SECTIONS questions:
+- Use "type": "svg"
+- Show the 3D solid being sliced
+- Show the resulting 2D cross-section shape
+- Label the cutting plane""",
+
+        "Circles (Area & Circumference)": """
+For CIRCLES questions:
+- Use "type": "svg"
+- Show the circle with center point and radius
+- Label radius, diameter, or circumference as needed
+- Include grid background if helpful""",
+
+        "Angles": """
+For ANGLES questions:
+- Use "type": "svg"
+- Show intersecting lines, parallel lines with transversal, or angle pairs
+- Label angle measures with variables or values
+- Mark congruent angles and right angles""",
+
+        "Area & Perimeter": """
+For AREA & PERIMETER questions:
+- Use "type": "svg" or "coordinate"
+- Show the shape with labeled dimensions
+- Include grid if using coordinate type
+- Label all sides needed for calculation""",
+
+        "Volume & Surface Area": """
+For VOLUME & SURFACE AREA questions:
+- Use "type": "svg"
+- Show 3D shapes with visible faces or nets
+- Label all dimensions (length, width, height, radius)
+- Show formulas or component areas if helpful""",
+
+        "Tree Diagrams": """
+For TREE DIAGRAMS questions:
+- Use "type": "chart"
+- Show branching structure for probability
+- Label each branch with outcomes and probabilities
+- Include all possible paths""",
+
+        # Grade 8 diagram topics
+        "Transformations": """
+For TRANSFORMATIONS questions:
+- Use "type": "coordinate"
+- Show original figure and transformed figure
+- Label transformation type (translation, rotation, reflection, dilation)
+- Show center of rotation, line of reflection, or scale factor""",
+
+        "Congruence": """
+For CONGRUENCE questions:
+- Use "type": "svg" or "coordinate"
+- Show two congruent figures with corresponding parts marked
+- Use tick marks for equal sides, arcs for equal angles
+- Label corresponding vertices""",
+
+        "Similarity": """
+For SIMILARITY questions:
+- Use "type": "svg" or "coordinate"
+- Show similar figures with proportional sides
+- Label scale factor and corresponding angles
+- Mark congruent angles""",
+
+        "Pythagorean Theorem": """
+For PYTHAGOREAN THEOREM questions:
+- Use "type": "svg" or "coordinate"
+- Show right triangle with legs and hypotenuse labeled
+- Include square on each side if helpful
+- Label known and unknown sides""",
+
+        "Volume of Cylinders/Cones/Spheres": """
+For VOLUME OF CYLINDERS/CONES/SPHERES questions:
+- Use "type": "svg"
+- Show 3D solid with labeled dimensions (radius, height)
+- Show radius and height clearly
+- Include formula hint if helpful""",
+
+        "Coordinate Geometry": """
+For COORDINATE GEOMETRY questions:
+- Use "type": "coordinate"
+- Show points, lines, or shapes on coordinate grid
+- Label coordinates of key points
+- Show slope triangles or distance calculations if needed""",
+
+        "Scatter Plots": """
+For SCATTER PLOTS questions:
+- Use "type": "chart"
+- Show data points on x-y coordinate system
+- Include line of best fit if applicable
+- Label axes with variables and units""",
+
+        "Two-Way Tables": """
+For TWO-WAY TABLES questions:
+- Use "type": "chart"
+- Show frequency table with rows and columns
+- Label categories clearly
+- Include totals in margins"""
     }
 
     topic_instructions = diagram_instructions.get(topic, "")
