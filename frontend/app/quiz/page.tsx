@@ -1,15 +1,29 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ArrowRight, Check, X, Eraser, Palette, Trash2, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Check, X, Flag, AlertCircle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Progress } from '../components/ui/progress';
 import { useQuiz } from '@/hooks/useQuiz';
+import { useQuizPersistence } from '@/hooks/useQuizPersistence';
 import { DiagramRenderer } from '../components/quiz/DiagramRenderer';
+import { QuestionNavigator } from '../components/quiz/QuestionNavigator';
+import { CanvasPanel } from '../components/quiz/CanvasPanel';
+import { QuizReview } from '../components/quiz/QuizReview';
+import { QuizSkeleton } from '../components/quiz/QuizSkeleton';
+import { GenerationProgress } from '../components/quiz/GenerationProgress';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../components/ui/dialog';
 import type { Question } from '@/types';
 
 export default function QuizPage() {
@@ -19,6 +33,7 @@ export default function QuizPage() {
   const difficulty = searchParams.get('difficulty') || 'easy';
   const count = parseInt(searchParams.get('count') || '5');
 
+  // Quiz state
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState<Record<number, string[]>>({});
@@ -28,25 +43,48 @@ export default function QuizPage() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [quizComplete, setQuizComplete] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [showReview, setShowReview] = useState(false);
+
+  // UI state
+  const [isCanvasOpen, setIsCanvasOpen] = useState(true);
+  const [flagged, setFlagged] = useState<Record<number, boolean>>({});
+  const [canvasSnapshots, setCanvasSnapshots] = useState<Record<number, string>>({});
+  const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
+  const [pendingSession, setPendingSession] = useState<ReturnType<typeof loadSession> | null>(null);
 
   const { generateQuiz, generateDiagramQuiz, submitAnswer, retryLastOperation, loadingState, errorMessage, retryCount, isGenerating, isGeneratingDiagram, quizData, diagramQuizData } = useQuiz();
+  const { saveSession, loadSession, clearSession, hasActiveSession } = useQuizPersistence();
 
-  // Canvas refs
-  const [canvasSnapshots, setCanvasSnapshots] = useState<Record<number, string>>({});
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [currentTool, setCurrentTool] = useState('pen');
-  const [currentColor, setCurrentColor] = useState('#1e293b');
-  const [lineWidth, setLineWidth] = useState(3);
-  const lastPos = useRef({ x: 0, y: 0 });
+  // Check for existing session on mount
+  useEffect(() => {
+    if (!isInitialized && hasActiveSession()) {
+      const session = loadSession();
+      if (session) {
+        // Check if session matches current params
+        const sessionGrade = session.grade;
+        const sessionTopics = session.topics?.join(',') || '';
+        const sessionDifficulty = session.difficulty;
+        const currentTopics = topics.join(',');
+
+        // Only show recovery dialog if params match
+        if (sessionGrade === grade && sessionTopics === currentTopics && sessionDifficulty === difficulty) {
+          setPendingSession(session);
+          setShowRecoveryDialog(true);
+        } else {
+          // Different quiz params, clear old session
+          clearSession();
+        }
+      }
+    }
+  }, [isInitialized, hasActiveSession, loadSession, clearSession, grade, topics, difficulty]);
 
   // Load first question
   useEffect(() => {
-    if (!isInitialized) {
+    if (!isInitialized && !showRecoveryDialog) {
       loadNextQuestion();
       setIsInitialized(true);
     }
-  }, [isInitialized]);
+  }, [isInitialized, showRecoveryDialog]);
 
   // Handle quiz data when generated
   useEffect(() => {
@@ -74,23 +112,39 @@ export default function QuizPage() {
     }
   }, [diagramQuizData, currentQ]);
 
-  // Restore canvas when question changes
+  // Timer
   useEffect(() => {
-    restoreCanvasSnapshot(currentQ);
-  }, [currentQ]);
-  useEffect(() => {
-    if (quizComplete) return;
+    if (quizComplete || showReview) return;
     const timer = setInterval(() => {
       setElapsedSeconds((s) => s + 1);
     }, 1000);
     return () => clearInterval(timer);
-  }, [quizComplete]);
+  }, [quizComplete, showReview]);
+
+  // Save session on state changes
+  useEffect(() => {
+    if (isInitialized && questions.length > 0 && !quizComplete && !showReview) {
+      saveSession({
+        questions,
+        currentQ,
+        answers,
+        answered,
+        score,
+        elapsedSeconds,
+        canvasSnapshots,
+        grade,
+        topics,
+        difficulty,
+        startedAt: new Date().toISOString(),
+        flagged,
+      });
+    }
+  }, [questions, currentQ, answers, answered, score, elapsedSeconds, canvasSnapshots, isInitialized, quizComplete, showReview, saveSession, grade, topics, difficulty, flagged]);
 
   const loadNextQuestion = async () => {
     try {
       // If topics are specified, use diagram quiz generation
       if (topics.length > 0) {
-        // Use the first topic for diagram quiz generation
         await generateDiagramQuiz({
           grade,
           topic: topics[0],
@@ -104,6 +158,28 @@ export default function QuizPage() {
     } catch (error) {
       console.error('Error loading question:', error);
     }
+  };
+
+  const handleRestoreSession = () => {
+    if (pendingSession) {
+      setQuestions(pendingSession.questions);
+      setCurrentQ(pendingSession.currentQ);
+      setAnswers(pendingSession.answers);
+      setAnswered(pendingSession.answered);
+      setScore(pendingSession.score);
+      setElapsedSeconds(pendingSession.elapsedSeconds);
+      setCanvasSnapshots(pendingSession.canvasSnapshots);
+      setFlagged(pendingSession.flagged || {});
+      setIsInitialized(true);
+    }
+    setShowRecoveryDialog(false);
+  };
+
+  const handleStartFresh = () => {
+    clearSession();
+    setShowRecoveryDialog(false);
+    loadNextQuestion();
+    setIsInitialized(true);
   };
 
   const formatTime = (seconds: number) => {
@@ -137,126 +213,52 @@ export default function QuizPage() {
     });
   };
 
-  const saveCanvasSnapshot = () => {
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const dataUrl = canvas.toDataURL('image/png');
-      setCanvasSnapshots(prev => ({
-        ...prev,
-        [currentQ]: dataUrl
-      }));
-    }
-  };
+  const handleSaveCanvasSnapshot = useCallback((qIndex: number, dataUrl: string) => {
+    setCanvasSnapshots(prev => ({
+      ...prev,
+      [qIndex]: dataUrl
+    }));
+  }, []);
 
-  const restoreCanvasSnapshot = (questionIndex: number) => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-
-    const snapshot = canvasSnapshots[questionIndex];
-    if (snapshot) {
-      const img = new Image();
-      img.onload = () => {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0);
-      };
-      img.src = snapshot;
-    } else {
-      // Clear canvas if no snapshot
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-  };
-
-  const changeQuestion = async (dir: number) => {
-    // Save current canvas before navigating
-    saveCanvasSnapshot();
-
-    const newIdx = currentQ + dir;
-
-    if (dir === 1 && newIdx >= questions.length) {
-      await loadNextQuestion();
-      return;
-    }
-
+  const changeQuestion = async (newIdx: number) => {
     if (newIdx >= 0 && newIdx < questions.length) {
       setCurrentQ(newIdx);
     }
   };
 
+  const handleNavigate = (index: number) => {
+    changeQuestion(index);
+  };
+
+  const handleToggleFlag = (index: number) => {
+    setFlagged(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }));
+  };
+
   const finishQuiz = () => {
     setQuizComplete(true);
+    setShowReview(true);
+    clearSession();
   };
 
-  // Canvas functions
-  const getCanvasPos = (e: React.MouseEvent | React.TouchEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-
-    const rect = canvas.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-
-    return {
-      x: clientX - rect.left,
-      y: clientY - rect.top,
-    };
+  const handleRetryQuiz = () => {
+    // Reset all state
+    setQuestions([]);
+    setCurrentQ(0);
+    setAnswers({});
+    setAnswered({});
+    setShowFeedback({});
+    setScore({ correct: 0, wrong: 0 });
+    setElapsedSeconds(0);
+    setCanvasSnapshots({});
+    setFlagged({});
+    setQuizComplete(false);
+    setShowReview(false);
+    setIsInitialized(false);
+    clearSession();
   };
-
-  const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
-    setIsDrawing(true);
-    const pos = getCanvasPos(e);
-    lastPos.current = pos;
-  };
-
-  const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing) return;
-    e.preventDefault();
-
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-
-    const pos = getCanvasPos(e);
-
-    ctx.beginPath();
-    ctx.moveTo(lastPos.current.x, lastPos.current.y);
-    ctx.lineTo(pos.x, pos.y);
-    ctx.strokeStyle = currentTool === 'eraser' ? '#ffffff' : currentColor;
-    ctx.lineWidth = currentTool === 'eraser' ? lineWidth * 4 : lineWidth;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-
-    lastPos.current = pos;
-  };
-
-  const stopDrawing = () => {
-    setIsDrawing(false);
-  };
-
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  };
-
-  const resizeCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    const container = canvas?.parentElement;
-    if (!canvas || !container) return;
-
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight - 56;
-    clearCanvas();
-  }, []);
-
-  useEffect(() => {
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-    return () => window.removeEventListener('resize', resizeCanvas);
-  }, [resizeCanvas]);
 
   const currentQuestion = questions[currentQ];
 
@@ -264,7 +266,7 @@ export default function QuizPage() {
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
       // Ignore if no current question or if typing in an input
-      if (!currentQuestion || quizComplete || document.activeElement?.tagName === 'INPUT') {
+      if (!currentQuestion || quizComplete || showReview || document.activeElement?.tagName === 'INPUT') {
         return;
       }
 
@@ -279,65 +281,73 @@ export default function QuizPage() {
 
       // Arrow right for next question
       if (e.key === 'ArrowRight') {
-        if (answered[currentQ] && currentQ < questions.length - 1) {
-          changeQuestion(1);
+        if (currentQ < questions.length - 1) {
+          changeQuestion(currentQ + 1);
         }
       }
 
       // Arrow left for previous question
       if (e.key === 'ArrowLeft') {
         if (currentQ > 0) {
-          changeQuestion(-1);
+          changeQuestion(currentQ - 1);
         }
+      }
+
+      // F key to flag current question
+      if (e.key === 'f' || e.key === 'F') {
+        handleToggleFlag(currentQ);
       }
     };
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [currentQuestion, currentQ, questions.length, answered, quizComplete]);
+  }, [currentQuestion, currentQ, questions.length, answered, quizComplete, showReview]);
+  const isLoading = isGenerating || isGeneratingDiagram;
+  const loadingStage = loadingState === 'retrying' ? 'retrying' : loadingState === 'generating' ? 'generating' : 'pregenerated';
 
-  if (quizComplete) {
-    const total = score.correct + score.wrong;
-    const percent = total > 0 ? Math.round((score.correct / total) * 100) : 0;
-
-    let message = '';
-    if (percent >= 90) message = 'Outstanding! 🌟';
-    else if (percent >= 70) message = 'Great job! 👍';
-    else if (percent >= 50) message = 'Good effort! 💪';
-    else message = 'Keep practicing! 📚';
-
+  // Show review mode
+  if (showReview) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <Card className="w-full max-w-md text-center">
-          <CardContent className="pt-8 pb-8">
-            <h1 className="text-3xl font-bold mb-4">Quiz Complete!</h1>
-            <div className="text-6xl font-bold text-primary mb-4">
-              {score.correct}/{total}
-            </div>
-            <p className="text-xl text-muted-foreground mb-2">
-              {percent}% {message}
-            </p>
-            <div className="flex justify-center gap-8 mt-6">
-              <div className="text-green-600">
-                <Check className="inline h-5 w-5 mr-1" />
-                {score.correct} Correct
-              </div>
-              <div className="text-red-600">
-                <X className="inline h-5 w-5 mr-1" />
-                {score.wrong} Incorrect
-              </div>
-            </div>
-            <Link href="/">
-              <Button className="mt-8">Back to Home</Button>
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
+      <QuizReview
+        questions={questions}
+        answers={answers}
+        score={score}
+        elapsedSeconds={elapsedSeconds}
+        onRetry={handleRetryQuiz}
+      />
     );
   }
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Session Recovery Dialog */}
+      <Dialog open={showRecoveryDialog} onOpenChange={setShowRecoveryDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resume Previous Quiz?</DialogTitle>
+            <DialogDescription>
+              You have an unfinished quiz from earlier. Would you like to resume where you left off?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            {pendingSession && (
+              <div className="text-sm text-muted-foreground space-y-1">
+                <p>Progress: {Object.keys(pendingSession.answered).length} / {pendingSession.questions.length} questions answered</p>
+                <p>Time elapsed: {formatTime(pendingSession.elapsedSeconds)}</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={handleStartFresh}>
+              Start Fresh
+            </Button>
+            <Button onClick={handleRestoreSession}>
+              Resume Quiz
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Header */}
       <header className="border-b bg-card px-4 py-3">
         <div className="flex items-center justify-between max-w-7xl mx-auto">
@@ -377,43 +387,80 @@ export default function QuizPage() {
       <div className="w-full bg-secondary">
         <div
           className="h-1 bg-primary transition-all duration-300"
-          style={{ width: `${((currentQ + 1) / questions.length) * 100}%` }}
+          style={{ width: `${questions.length > 0 ? ((currentQ + 1) / questions.length) * 100 : 0}%` }}
         />
       </div>
 
       <div className="flex h-[calc(100vh-65px)]">
+        {/* Left Sidebar - Question Navigator */}
+        <div className="w-64 border-r bg-card flex flex-col hidden lg:flex">
+          <QuestionNavigator
+            totalQuestions={questions.length || count}
+            currentQ={currentQ}
+            answered={answered}
+            flagged={flagged}
+            onNavigate={handleNavigate}
+          />
+
+          {/* Flag Button */}
+          <div className="p-4 border-t mt-auto">
+            <Button
+              variant={flagged[currentQ] ? 'default' : 'outline'}
+              size="sm"
+              className="w-full"
+              onClick={() => handleToggleFlag(currentQ)}
+            >
+              <Flag className={`h-4 w-4 mr-2 ${flagged[currentQ] ? 'fill-current' : ''}`} />
+              {flagged[currentQ] ? 'Flagged for Review' : 'Flag for Review'}
+            </Button>
+            <p className="text-xs text-muted-foreground mt-2 text-center">
+              Press &apos;F&apos; to toggle flag
+            </p>
+          </div>
+        </div>
+
         {/* Question Panel */}
         <div className="flex-1 overflow-y-auto p-6">
-          {!currentQuestion || isGenerating || isGeneratingDiagram ? (
-            <div className="flex flex-col items-center justify-center h-full">
-              <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mb-4" />
-              <span className="text-muted-foreground">
-                {loadingState === 'retrying' ? (
-                  <>
-                    Retrying... (attempt {retryCount}/{3})
-                  </>
-                ) : loadingState === 'generating' ? (
-                  'Generating questions...'
-                ) : (
-                  'Loading questions...'
-                )}
-              </span>
-            </div>
-          ) : errorMessage ? (
-            <div className="flex flex-col items-center justify-center h-full">
-              <div className="text-red-500 mb-4">
-                <AlertCircle className="h-12 w-12 mx-auto mb-2" />
-                <p className="text-lg font-medium">{errorMessage}</p>
+          {!currentQuestion || isLoading ? (
+            errorMessage ? (
+              <div className="flex flex-col items-center justify-center h-full">
+                <div className="text-red-500 mb-4">
+                  <AlertCircle className="h-12 w-12 mx-auto mb-2" />
+                  <p className="text-lg font-medium">{errorMessage}</p>
+                </div>
+                <Button onClick={retryLastOperation} variant="outline" className="mt-4">
+                  Try Again
+                </Button>
               </div>
-              <Button onClick={retryLastOperation} variant="outline" className="mt-4">
-                Try Again
-              </Button>
-            </div>
+            ) : (
+              <GenerationProgress
+                stage={loadingStage}
+                retryCount={retryCount}
+                maxRetries={3}
+              />
+            )
           ) : (
             <div className="max-w-2xl mx-auto">
+              {/* Mobile Question Navigator */}
+              <div className="lg:hidden mb-4">
+                <QuestionNavigator
+                  totalQuestions={questions.length}
+                  currentQ={currentQ}
+                  answered={answered}
+                  flagged={flagged}
+                  onNavigate={handleNavigate}
+                />
+              </div>
+
               <div className="flex items-center gap-2 mb-4">
                 <Badge>Q{currentQ + 1}</Badge>
                 <Badge variant="secondary">{currentQuestion.topic || 'General'}</Badge>
+                {flagged[currentQ] && (
+                  <Badge className="bg-amber-100 text-amber-800">
+                    <Flag className="h-3 w-3 mr-1" />
+                    Flagged
+                  </Badge>
+                )}
               </div>
 
               <h2 className="text-xl font-medium mb-6">{currentQuestion.text}</h2>
@@ -487,94 +534,44 @@ export default function QuizPage() {
               <div className="flex justify-between mt-8">
                 <Button
                   variant="outline"
-                  onClick={() => changeQuestion(-1)}
+                  onClick={() => changeQuestion(currentQ - 1)}
                   disabled={currentQ === 0}
                 >
                   <ArrowLeft className="h-4 w-4 mr-1" />
                   Previous
                 </Button>
 
-                {answered[currentQ] ? (
-                  <Button onClick={() => changeQuestion(1)}>
-                    Next
-                    <ArrowRight className="h-4 w-4 ml-1" />
+                {currentQ === questions.length - 1 ? (
+                  <Button onClick={finishQuiz} variant="default">
+                    Finish Quiz
                   </Button>
                 ) : (
-                  <Button variant="outline" onClick={finishQuiz}>
-                    Finish
+                  <Button onClick={() => changeQuestion(currentQ + 1)}>
+                    Next
                   </Button>
                 )}
               </div>
+
+              {/* Finish button for answered questions */}
+              {Object.keys(answered).length > 0 && (
+                <div className="mt-4 text-center">
+                  <Button variant="outline" onClick={finishQuiz}>
+                    Finish Quiz ({Object.keys(answered).length}/{questions.length} answered)
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </div>
 
         {/* Canvas Panel */}
-        <div className="w-80 border-l bg-card flex flex-col">
-          {/* Canvas Toolbar */}
-          <div className="p-3 border-b flex items-center gap-2 flex-wrap">
-            <Button
-              variant={currentTool === 'pen' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setCurrentTool('pen')}
-            >
-              <Palette className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={currentTool === 'eraser' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setCurrentTool('eraser')}
-            >
-              <Eraser className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="sm" onClick={clearCanvas}>
-              <Trash2 className="h-4 w-4 text-destructive" />
-            </Button>
-
-            <div className="flex gap-1 ml-auto">
-              {['#1e293b', '#ef4444', '#3b82f6', '#10b981'].map((color) => (
-                <button
-                  key={color}
-                  className={`w-6 h-6 rounded-full border-2 ${
-                    currentColor === color && currentTool === 'pen'
-                      ? 'border-primary'
-                      : 'border-transparent'
-                  }`}
-                  style={{ backgroundColor: color }}
-                  onClick={() => {
-                    setCurrentColor(color);
-                    setCurrentTool('pen');
-                  }}
-                />
-              ))}
-            </div>
-
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={lineWidth}
-              onChange={(e) => setLineWidth(parseInt(e.target.value))}
-              className="w-16"
-            />
-          </div>
-
-          {/* Canvas */}
-          <div className="flex-1 relative">
-            <canvas
-              ref={canvasRef}
-              className="absolute inset-0 cursor-crosshair touch-none"
-              onMouseDown={startDrawing}
-              onMouseMove={draw}
-              onMouseUp={stopDrawing}
-              onMouseLeave={stopDrawing}
-              onTouchStart={startDrawing}
-              onTouchMove={draw}
-              onTouchEnd={stopDrawing}
-              style={{ background: 'white' }}
-            />
-          </div>
-        </div>
+        <CanvasPanel
+          isOpen={isCanvasOpen}
+          onToggle={() => setIsCanvasOpen(!isCanvasOpen)}
+          currentQ={currentQ}
+          onSaveSnapshot={handleSaveCanvasSnapshot}
+          snapshot={canvasSnapshots[currentQ]}
+        />
       </div>
     </div>
   );
